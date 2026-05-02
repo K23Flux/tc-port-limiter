@@ -195,6 +195,24 @@ is_port_limited() {
     tc class show dev "$OUT_IF" 2>/dev/null | grep -q "${ETH_ROOT_HANDLE}${port_hex}\b"
 }
 
+add_port_filters() {
+    local dev="$1" parent="$2" prio="$3" direction="$4" port="$5" flowid="$6"
+    local proto
+
+    for proto in tcp udp; do
+        tc filter add dev "$dev" parent "$parent" \
+            protocol ip prio "$prio" flower \
+            ip_proto "$proto" \
+            "${direction}_port" "$port" \
+            flowid "$flowid" || return 1
+    done
+}
+
+remove_port_filters() {
+    local dev="$1" parent="$2" prio="$3"
+    tc filter del dev "$dev" parent "$parent" prio "$prio" 2>/dev/null || true
+}
+
 add_limit() {
     local port="$1" kbps="$2"
     local skip_save="${3:-false}"
@@ -223,10 +241,8 @@ add_limit() {
         die "添加 eth0 class 失败 (port=${port}, rate=${kbit}kbit)"
     }
 
-    tc filter add dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" \
-        protocol ip prio "$prio" flower \
-        src_port "$port" \
-        flowid "${ETH_ROOT_HANDLE}${port_hex}" || {
+    add_port_filters "$OUT_IF" "$ETH_ROOT_HANDLE" "$prio" src "$port" "${ETH_ROOT_HANDLE}${port_hex}" || {
+        remove_port_filters "$OUT_IF" "$ETH_ROOT_HANDLE" "$prio"
         tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
         die "添加 eth0 filter 失败 (port=${port})"
     }
@@ -241,10 +257,8 @@ add_limit() {
             htb rate "${kbit}kbit" ceil "${kbit}kbit" || \
             die "添加 ifb0 class 失败 (port=${port}, rate=${kbit}kbit)"
 
-        tc filter add dev "$INGRESS_IF" parent "$IFB_ROOT_HANDLE" \
-            protocol ip prio "$prio" flower \
-            dst_port "$port" \
-            flowid "${IFB_ROOT_HANDLE}${port_hex}" || {
+        add_port_filters "$INGRESS_IF" "$IFB_ROOT_HANDLE" "$prio" dst "$port" "${IFB_ROOT_HANDLE}${port_hex}" || {
+            remove_port_filters "$INGRESS_IF" "$IFB_ROOT_HANDLE" "$prio"
             tc class del dev "$INGRESS_IF" classid "${IFB_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
             die "添加 ifb0 filter 失败 (port=${port})"
         }
@@ -273,7 +287,7 @@ remove_limit() {
     prio=$((16#${port_hex}))
 
     if tc class show dev "$OUT_IF" 2>/dev/null | grep -q "${ETH_ROOT_HANDLE}${port_hex}\b"; then
-        tc filter del dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" prio "$prio" 2>/dev/null || true
+        remove_port_filters "$OUT_IF" "$ETH_ROOT_HANDLE" "$prio"
         tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
         info "已移除 eth0 端口 ${port} 限速"
         removed=1
@@ -281,7 +295,7 @@ remove_limit() {
 
     if [[ "$HAS_IFB" -eq 1 ]]; then
         if tc class show dev "$INGRESS_IF" 2>/dev/null | grep -q "${IFB_ROOT_HANDLE}${port_hex}\b"; then
-            tc filter del dev "$INGRESS_IF" parent "$IFB_ROOT_HANDLE" prio "$prio" 2>/dev/null || true
+            remove_port_filters "$INGRESS_IF" "$IFB_ROOT_HANDLE" "$prio"
             tc class del dev "$INGRESS_IF" classid "${IFB_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
             info "已移除 ifb0 端口 ${port} 限速"
             removed=1
