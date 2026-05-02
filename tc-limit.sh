@@ -86,7 +86,7 @@ check_root() {
 
 check_deps() {
     local missing=()
-    for cmd in tc ss ip modprobe; do
+    for cmd in tc ss ip; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     [[ ${#missing[@]} -eq 0 ]] || die "缺少依赖命令: ${missing[*]}"
@@ -105,10 +105,10 @@ detect_out_if() {
 }
 
 init_ifb() {
-    if ! lsmod 2>/dev/null | grep -q "^ifb "; then
-        modprobe ifb 2>/dev/null && info "加载 ifb 内核模块" || {
-            warn "ifb 模块加载失败 (可能已内建，继续尝试)"
-        }
+    if command -v modprobe &>/dev/null; then
+        if ! lsmod 2>/dev/null | grep -q "^ifb "; then
+            modprobe ifb 2>/dev/null && info "加载 ifb 内核模块" || true
+        fi
     fi
 
     if ! ip link show "${INGRESS_IF}" &>/dev/null 2>&1; then
