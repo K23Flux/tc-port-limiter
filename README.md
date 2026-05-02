@@ -83,6 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/K23Flux/tc-port-limiter/main/tc-lim
   规则文件:   /etc/tc-limit/rules.conf
   开机自启:   未启用
   服务状态:   未运行
+  当前规则:   未生效
 
   [1] 📋 查看监听端口
   [2] 🔍 查看限速规则
@@ -122,6 +123,8 @@ curl -fsSL https://raw.githubusercontent.com/K23Flux/tc-port-limiter/main/tc-lim
 ```
 
 安装后 `tc-limit.service` 会立即执行一次 `load`，菜单中的服务状态应显示为运行中。服务停止时只清除当前内核中的 tc 规则，不会清空 `/etc/tc-limit/rules.conf`。
+
+`tc-limit.service` 是 `oneshot` 服务，某些系统上可能显示为 `未运行 (oneshot)`；以菜单里的“当前规则”或 `tc -s class show` 计数作为限速是否生效的准确信号。
 
 ---
 

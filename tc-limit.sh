@@ -461,6 +461,16 @@ show_status() {
 
     local svc_enabled="未安装"
     local svc_active="未运行"
+    local runtime_rules="未生效"
+
+    if tc class show dev "$OUT_IF" 2>/dev/null | grep "htb ${ETH_ROOT_HANDLE}" | grep -vq "${ETH_ROOT_HANDLE}${DEFAULT_CLASS}" || \
+        tc class show dev lo 2>/dev/null | grep "htb ${LO_ROOT_HANDLE}" | grep -vq "${LO_ROOT_HANDLE}${DEFAULT_CLASS}" || \
+        { [[ "$HAS_IFB" -eq 1 ]] && tc class show dev "$INGRESS_IF" 2>/dev/null | grep "htb ${IFB_ROOT_HANDLE}" | grep -vq "${IFB_ROOT_HANDLE}${DEFAULT_CLASS}"; }; then
+        runtime_rules="${GREEN}已生效${NC}"
+    else
+        runtime_rules="${DIM}未生效${NC}"
+    fi
+
     if command -v systemctl &>/dev/null; then
         if systemctl is-enabled tc-limit.service &>/dev/null 2>&1; then
             svc_enabled="${GREEN}已启用${NC}"
@@ -469,12 +479,15 @@ show_status() {
         fi
         if systemctl is-active tc-limit.service &>/dev/null 2>&1; then
             svc_active="${GREEN}运行中${NC}"
+        elif systemctl is-enabled tc-limit.service &>/dev/null 2>&1; then
+            svc_active="${DIM}未运行 (oneshot)${NC}"
         else
             svc_active="${DIM}未运行${NC}"
         fi
     fi
     echo -e "  开机自启:   ${svc_enabled}"
     echo -e "  服务状态:   ${svc_active}"
+    echo -e "  当前规则:   ${runtime_rules}"
     hr
 }
 
