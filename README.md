@@ -44,8 +44,8 @@
                    └───────────┘
 ```
 
-- **eth0 出站**: 匹配 `src_port`，限制服务发出的响应流量
-- **ifb0 入站**: 匹配 `dst_port`，限制进入服务的请求流量（由 lo ingress 镜像而来）
+- **eth0 出站**: 按 TCP/UDP 分别匹配 `ip_proto` + `src_port`，限制服务发出的响应流量
+- **ifb0 入站**: 按 TCP/UDP 分别匹配 `ip_proto` + `dst_port`，限制进入服务的请求流量（由 lo ingress 镜像而来）
 
 ---
 
@@ -165,7 +165,7 @@ apk add iproute2 kmod
 
 ```
 PORT|KBPS|ETH_MINOR|IFB_MINOR
-48189|50|bc2a|bc2a
+48189|50|bc3d|bc3d
 8080|100|1f90|1f90
 ```
 
@@ -177,9 +177,9 @@ PORT|KBPS|ETH_MINOR|IFB_MINOR
 |------|-----|
 | 分类器 | `flower` (内核 3.x+) |
 | HTB root handle | `10:` (eth0) / `20:` (ifb0) |
-| classid 编码 | 十进制端口号直接用作 HTB minor handle |
+| classid 编码 | 端口号转十六进制后用作 HTB minor handle，例如 `48189` → `bc3d` |
 | 默认 class | `10:ffff` / `20:ffff` (10000mbit, 不限速) |
-| 协议 | IPv4 (TCP + UDP) |
+| 协议 | IPv4，TCP/UDP 各生成一条 `flower` filter，并显式指定 `ip_proto` |
 | 镜像规则 | lo ingress → u32 match-all → mirred redirect → ifb0 |
 
 ---
@@ -212,8 +212,11 @@ lsmod | grep ifb
 ```bash
 tc qdisc show
 tc filter show dev eth0
+tc filter show dev ifb0
 tc filter show dev lo parent ffff:
 ```
+
+如果手动写 `flower src_port` 或 `flower dst_port`，需要同时指定 `ip_proto tcp` 或 `ip_proto udp`，否则部分系统会报 `Illegal "src_port"` / `Illegal "dst_port"`。
 
 ### 规则持久化不生效
 
