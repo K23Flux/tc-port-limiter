@@ -56,9 +56,9 @@ read_input() {
     local prompt_text="$1" default="$2" pattern="${3:-.*}" input
     while true; do
         if [[ -n "$default" ]]; then
-            echo -en "${CYAN}${prompt_text}${NC} ${DIM}[${default}]${NC}: "
+            printf "${CYAN}%s${NC} ${DIM}[%s]${NC}: " "$prompt_text" "$default" >&2
         else
-            echo -en "${CYAN}${prompt_text}${NC}: "
+            printf "${CYAN}%s${NC}: " "$prompt_text" >&2
         fi
         read -r input
         input="${input:-$default}"
@@ -66,7 +66,7 @@ read_input() {
             echo "$input"
             return 0
         fi
-        warn "输入无效，请重新输入"
+        warn "输入无效，请重新输入" >&2
     done
 }
 
