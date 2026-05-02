@@ -315,7 +315,7 @@ show_ports() {
         ip_port=$(echo "$line" | awk '{print $5}')
         port="${ip_port##*:}"
         [[ "$port" =~ ^[0-9]+$ ]] || continue
-        proc=$(echo "$line" | sed -n 's/.*users:(("*\([^"]*\)".*/\2/p')
+        proc=$(echo "$line" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
         [[ -z "$proc" ]] && proc="-"
         printf "  ${CYAN}%-8s${NC} %-8s %s\n" "$proto" "$port" "$proc"
         found=1
@@ -327,7 +327,7 @@ show_ports() {
         ip_port=$(echo "$line" | awk '{print $5}')
         port="${ip_port##*:}"
         [[ "$port" =~ ^[0-9]+$ ]] || continue
-        proc=$(echo "$line" | sed -n 's/.*users:(("*\([^"]*\)".*/\2/p'))
+        proc=$(echo "$line" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
         [[ -z "$proc" ]] && proc="-"
         printf "  ${CYAN}%-8s${NC} %-8s %s\n" "$proto" "$port" "$proc"
         found=1
