@@ -9,7 +9,7 @@
 
 ## 解决的问题
 
-在 NAT / LXC 容器中，服务流量走 `lo` (127.0.0.1) 回环网卡，传统 `tc` 规则对入站无效。本脚本通过 `ifb0` 虚拟网卡中转 `lo` 入站流量，配合 `eth0` 出站，实现**端口级别的双向限速**。
+在 NAT / LXC 容器中，服务流量可能走 `lo` (127.0.0.1) 回环网卡，传统 `tc` 规则对入站无效。本脚本通过 `ifb0` 虚拟网卡中转 `lo` 入站流量，并额外限制 `lo` 出站响应流量，配合 `eth0` 出站，实现**端口级别的双向限速**。
 
 ---
 
@@ -42,10 +42,15 @@
                    │ dst_port→│
                    │  400kbit  │
                    └───────────┘
+
+                  lo egress
+               src_port 48189→
+                 rate 400kbit
 ```
 
 - **eth0 出站**: 按 TCP/UDP 分别匹配 `ip_proto` + `src_port`，限制服务发出的响应流量
 - **ifb0 入站**: 按 TCP/UDP 分别匹配 `ip_proto` + `dst_port`，限制进入服务的请求流量（由 lo ingress 镜像而来）
+- **lo 出站**: 按 TCP/UDP 分别匹配 `ip_proto` + `src_port`，限制 `127.0.0.1:端口` 返回本地转发端的响应流量
 
 ---
 
@@ -176,9 +181,9 @@ PORT|KBPS|ETH_MINOR|IFB_MINOR
 | 项目 | 值 |
 |------|-----|
 | 分类器 | `flower` (内核 3.x+) |
-| HTB root handle | `10:` (eth0) / `20:` (ifb0) |
+| HTB root handle | `10:` (eth0) / `20:` (ifb0) / `30:` (lo) |
 | classid 编码 | 端口号转十六进制后用作 HTB minor handle，例如 `48189` → `bc3d` |
-| 默认 class | `10:ffff` / `20:ffff` (10000mbit, 不限速) |
+| 默认 class | `10:ffff` / `20:ffff` / `30:ffff` (10000mbit, 不限速) |
 | 协议 | IPv4，TCP/UDP 各生成一条 `flower` filter，并显式指定 `ip_proto` |
 | 镜像规则 | lo ingress → u32 match-all → mirred redirect → ifb0 |
 
@@ -213,10 +218,20 @@ lsmod | grep ifb
 tc qdisc show
 tc filter show dev eth0
 tc filter show dev ifb0
+tc filter show dev lo
 tc filter show dev lo parent ffff:
 ```
 
 如果手动写 `flower src_port` 或 `flower dst_port`，需要同时指定 `ip_proto tcp` 或 `ip_proto udp`，否则部分系统会报 `Illegal "src_port"` / `Illegal "dst_port"`。
+
+### 出站计数不增长
+
+如果 `tc -s class show dev eth0` 中端口 class 一直是 `0 bytes`，但 `ss -tnp` 显示服务连接都在 `127.0.0.1:端口` 上，说明响应流量走的是回环接口。此时应查看 `lo` 出站 class：
+
+```bash
+tc -s class show dev lo
+tc filter show dev lo
+```
 
 ### 规则持久化不生效
 

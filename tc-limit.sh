@@ -22,6 +22,7 @@ readonly RULES_CONF="${RULES_DIR}/rules.conf"
 readonly SERVICE_FILE="/etc/systemd/system/tc-limit.service"
 readonly ETH_ROOT_HANDLE="10:"
 readonly IFB_ROOT_HANDLE="20:"
+readonly LO_ROOT_HANDLE="30:"
 readonly DEFAULT_CLASS="ffff"
 readonly DEFAULT_RATE_GBIT="10000"
 readonly INGRESS_IF="ifb0"
@@ -249,6 +250,26 @@ add_limit() {
 
     info "eth0 出站 : 端口 ${port} → ${kbit}kbit (${kbps}KB/s)"
 
+    ensure_root_qdisc "lo" "$LO_ROOT_HANDLE"
+
+    tc class add dev lo parent "$LO_ROOT_HANDLE" \
+        classid "${LO_ROOT_HANDLE}${port_hex}" \
+        htb rate "${kbit}kbit" ceil "${kbit}kbit" || {
+        remove_port_filters "$OUT_IF" "$ETH_ROOT_HANDLE" "$prio"
+        tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
+        die "添加 lo class 失败 (port=${port}, rate=${kbit}kbit)"
+    }
+
+    add_port_filters "lo" "$LO_ROOT_HANDLE" "$prio" src "$port" "${LO_ROOT_HANDLE}${port_hex}" || {
+        remove_port_filters "lo" "$LO_ROOT_HANDLE" "$prio"
+        tc class del dev lo classid "${LO_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
+        remove_port_filters "$OUT_IF" "$ETH_ROOT_HANDLE" "$prio"
+        tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
+        die "添加 lo filter 失败 (port=${port})"
+    }
+
+    info "lo 出站   : 端口 ${port} → ${kbit}kbit (${kbps}KB/s)"
+
     if [[ "$HAS_IFB" -eq 1 ]]; then
         ensure_root_qdisc "$INGRESS_IF" "$IFB_ROOT_HANDLE"
 
@@ -290,6 +311,13 @@ remove_limit() {
         remove_port_filters "$OUT_IF" "$ETH_ROOT_HANDLE" "$prio"
         tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
         info "已移除 eth0 端口 ${port} 限速"
+        removed=1
+    fi
+
+    if tc class show dev lo 2>/dev/null | grep -q "${LO_ROOT_HANDLE}${port_hex}\b"; then
+        remove_port_filters "lo" "$LO_ROOT_HANDLE" "$prio"
+        tc class del dev lo classid "${LO_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
+        info "已移除 lo 端口 ${port} 限速"
         removed=1
     fi
 
@@ -408,6 +436,7 @@ show_rules() {
     }
 
     show_rules_for_dev "$OUT_IF" "eth0 出站" "$ETH_ROOT_HANDLE"
+    show_rules_for_dev "lo" "lo 出站" "$LO_ROOT_HANDLE"
     if [[ "$HAS_IFB" -eq 1 ]]; then
         show_rules_for_dev "$INGRESS_IF" "ifb0 入站" "$IFB_ROOT_HANDLE"
     fi
@@ -627,6 +656,7 @@ cmd_unload_all() {
     done
 
     tc qdisc del dev "$OUT_IF" root 2>/dev/null || true
+    tc qdisc del dev lo root 2>/dev/null || true
     if [[ "$HAS_IFB" -eq 1 ]]; then
         tc qdisc del dev "$INGRESS_IF" root 2>/dev/null || true
     fi
