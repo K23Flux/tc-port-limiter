@@ -98,7 +98,7 @@ curl -fsSL https://raw.githubusercontent.com/K23Flux/tc-port-limiter/main/tc-lim
 |------|------|
 | `./tc-limit.sh` | 进入交互式菜单 |
 | `./tc-limit.sh status` | 查看当前状态和规则 |
-| `./tc-limit.sh install` | 一键安装开机自启（含规则持久化） |
+| `./tc-limit.sh install` | 一键安装开机自启并立即恢复持久化规则 |
 | `./tc-limit.sh uninstall` | 卸载开机自启 |
 | `./tc-limit.sh load` | 从配置文件恢复所有规则 |
 | `./tc-limit.sh unload-all` | 清除所有规则 |
@@ -117,9 +117,11 @@ curl -fsSL https://raw.githubusercontent.com/K23Flux/tc-port-limiter/main/tc-lim
 # 查看当前规则
 ./tc-limit.sh status
 
-# 安装开机自启（规则持久化）
+# 安装开机自启并立即启动服务
 ./tc-limit.sh install
 ```
+
+安装后 `tc-limit.service` 会立即执行一次 `load`，菜单中的服务状态应显示为运行中。服务停止时只清除当前内核中的 tc 规则，不会清空 `/etc/tc-limit/rules.conf`。
 
 ---
 
@@ -239,6 +241,12 @@ tc filter show dev lo
 
 ```bash
 journalctl -u tc-limit.service -n 30
+```
+
+如果菜单显示“已启用”但“未运行”，重新执行一次安装命令即可更新 unit 并立即启动服务：
+
+```bash
+./tc-limit.sh install
 ```
 
 ---

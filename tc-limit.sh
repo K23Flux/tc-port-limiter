@@ -633,6 +633,8 @@ cmd_load() {
 }
 
 cmd_unload_all() {
+    local preserve_rules="${1:-false}"
+
     check_root
     check_deps
     detect_out_if
@@ -660,7 +662,9 @@ cmd_unload_all() {
     if [[ "$HAS_IFB" -eq 1 ]]; then
         tc qdisc del dev "$INGRESS_IF" root 2>/dev/null || true
     fi
-    >"${RULES_CONF}"
+    if [[ "$preserve_rules" != "true" ]]; then
+        >"${RULES_CONF}"
+    fi
     ok "所有限速规则已清除"
 }
 
@@ -679,19 +683,23 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=${SCRIPT_PATH} load
-ExecStop=${SCRIPT_PATH} unload-all
+ExecStop=${SCRIPT_PATH} unload-runtime
 
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
     systemctl daemon-reload
     systemctl enable tc-limit.service 2>/dev/null || warn "systemctl enable 失败"
+    if systemctl is-active tc-limit.service &>/dev/null 2>&1; then
+        info "服务已运行，当前规则保持生效"
+    else
+        systemctl start tc-limit.service 2>/dev/null || warn "systemctl start 失败，请手动执行: systemctl start tc-limit"
+    fi
     ok "开机自启已安装"
     info "规则已保存至 ${RULES_CONF}"
     info "服务文件: ${SERVICE_FILE}"
     echo
     echo "  后续可用命令:"
-    echo "    systemctl start tc-limit    立即应用规则"
     echo "    systemctl stop tc-limit     清除所有规则"
     echo "    systemctl status tc-limit   查看状态"
 }
@@ -761,6 +769,7 @@ BANNER
 case "${1:-menu}" in
 load) cmd_load ;;
 unload-all) cmd_unload_all ;;
+unload-runtime) cmd_unload_all true ;;
 install)
     init_all
     service_install
