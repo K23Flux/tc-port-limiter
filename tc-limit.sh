@@ -164,14 +164,16 @@ init_all() {
 # ============================================================================
 ensure_root_qdisc() {
     local dev="$1" handle="$2"
-    if ! tc qdisc show dev "$dev" 2>/dev/null | grep -q "htb"; then
-        tc qdisc add dev "$dev" root handle "$handle" htb default "${DEFAULT_CLASS}" 2>/dev/null || {
-            die "无法在 ${dev} 上创建 root qdisc (handle ${handle})"
-        }
+    # 检查是否已有匹配 handle 的 htb qdisc
+    if ! tc qdisc show dev "$dev" 2>/dev/null | grep -q "htb ${handle}"; then
+        # 有旧的不匹配的 qdisc？先清掉
+        if tc qdisc show dev "$dev" 2>/dev/null | grep -q "htb"; then
+            tc qdisc del dev "$dev" root 2>/dev/null || true
+            info "已清除 ${dev} 上旧的 tc qdisc"
+        fi
+        tc qdisc add dev "$dev" root handle "$handle" htb default "${DEFAULT_CLASS}" || die "无法在 ${dev} 上创建 root qdisc"
         tc class add dev "$dev" parent "${handle}" classid "${handle}${DEFAULT_CLASS}" \
-            htb rate "${DEFAULT_RATE_GBIT}mbit" ceil "${DEFAULT_RATE_GBIT}mbit" 2>/dev/null || {
-            die "无法在 ${dev} 上创建默认 class"
-        }
+            htb rate "${DEFAULT_RATE_GBIT}mbit" ceil "${DEFAULT_RATE_GBIT}mbit" || die "无法在 ${dev} 上创建默认 class"
     fi
 }
 
@@ -196,14 +198,13 @@ add_limit() {
 
     tc class add dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" \
         classid "${ETH_ROOT_HANDLE}${port}" \
-        htb rate "${kbit}kbit" ceil "${kbit}kbit" 2>/dev/null || {
+        htb rate "${kbit}kbit" ceil "${kbit}kbit" || \
         die "添加 eth0 class 失败 (port=${port}, rate=${kbit}kbit)"
-    }
 
     tc filter add dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" \
         protocol ip prio 1 flower \
         src_port "$port" \
-        flowid "${ETH_ROOT_HANDLE}${port}" 2>/dev/null || {
+        flowid "${ETH_ROOT_HANDLE}${port}" || {
         tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port}" 2>/dev/null || true
         die "添加 eth0 filter 失败 (port=${port})"
     }
@@ -215,14 +216,13 @@ add_limit() {
 
         tc class add dev "$INGRESS_IF" parent "$IFB_ROOT_HANDLE" \
             classid "${IFB_ROOT_HANDLE}${port}" \
-            htb rate "${kbit}kbit" ceil "${kbit}kbit" 2>/dev/null || {
-            die "添加 ifb0 class 失败 (port=${port})"
-        }
+            htb rate "${kbit}kbit" ceil "${kbit}kbit" || \
+            die "添加 ifb0 class 失败 (port=${port}, rate=${kbit}kbit)"
 
         tc filter add dev "$INGRESS_IF" parent "$IFB_ROOT_HANDLE" \
             protocol ip prio 1 flower \
             dst_port "$port" \
-            flowid "${IFB_ROOT_HANDLE}${port}" 2>/dev/null || {
+            flowid "${IFB_ROOT_HANDLE}${port}" || {
             tc class del dev "$INGRESS_IF" classid "${IFB_ROOT_HANDLE}${port}" 2>/dev/null || true
             die "添加 ifb0 filter 失败 (port=${port})"
         }
