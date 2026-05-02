@@ -16,7 +16,7 @@ set -euo pipefail
 # ============================================================================
 # 全局常量
 # ============================================================================
-readonly SCRIPT_PATH="${0}"
+readonly SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || (d="$(dirname "$0")"; echo "$(cd "$d" 2>/dev/null && pwd)/$(basename "$0")"))"
 readonly RULES_DIR="/etc/tc-limit"
 readonly RULES_CONF="${RULES_DIR}/rules.conf"
 readonly SERVICE_FILE="/etc/systemd/system/tc-limit.service"
@@ -197,9 +197,11 @@ is_port_limited() {
 
 add_limit() {
     local port="$1" kbps="$2"
+    local skip_save="${3:-false}"
     local kbit=$((kbps * 8))
-    local port_hex
+    local port_hex prio
     port_hex=$(printf '%x' "$port")
+    prio=$((16#${port_hex}))
 
     [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || die "无效端口: $port"
     [[ "$kbps" =~ ^[0-9]+$ ]] && ((kbps > 0)) || die "无效速率: ${kbps}KB/s"
@@ -222,7 +224,7 @@ add_limit() {
     }
 
     tc filter add dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" \
-        protocol ip prio 1 flower \
+        protocol ip prio "$prio" flower \
         src_port "$port" \
         flowid "${ETH_ROOT_HANDLE}${port_hex}" || {
         tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
@@ -240,7 +242,7 @@ add_limit() {
             die "添加 ifb0 class 失败 (port=${port}, rate=${kbit}kbit)"
 
         tc filter add dev "$INGRESS_IF" parent "$IFB_ROOT_HANDLE" \
-            protocol ip prio 1 flower \
+            protocol ip prio "$prio" flower \
             dst_port "$port" \
             flowid "${IFB_ROOT_HANDLE}${port_hex}" || {
             tc class del dev "$INGRESS_IF" classid "${IFB_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
@@ -252,7 +254,9 @@ add_limit() {
         warn "ifb0 不可用，仅设置了出站限速"
     fi
 
-    save_rules
+    if [[ "$skip_save" != "true" ]]; then
+        save_rules
+    fi
 
     hr
     ok "端口 ${port} 限速已生效: ${kbps}KB/s (${kbit}kbit)"
@@ -264,11 +268,12 @@ remove_limit() {
 
     [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || die "无效端口: $port"
 
-    local port_hex removed=0
+    local port_hex removed=0 prio
     port_hex=$(printf '%x' "$port")
+    prio=$((16#${port_hex}))
 
     if tc class show dev "$OUT_IF" 2>/dev/null | grep -q "${ETH_ROOT_HANDLE}${port_hex}\b"; then
-        tc filter del dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" prio 1 flower src_port "$port" 2>/dev/null || true
+        tc filter del dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" prio "$prio" 2>/dev/null || true
         tc class del dev "$OUT_IF" classid "${ETH_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
         info "已移除 eth0 端口 ${port} 限速"
         removed=1
@@ -276,7 +281,7 @@ remove_limit() {
 
     if [[ "$HAS_IFB" -eq 1 ]]; then
         if tc class show dev "$INGRESS_IF" 2>/dev/null | grep -q "${IFB_ROOT_HANDLE}${port_hex}\b"; then
-            tc filter del dev "$INGRESS_IF" parent "$IFB_ROOT_HANDLE" prio 1 flower dst_port "$port" 2>/dev/null || true
+            tc filter del dev "$INGRESS_IF" parent "$IFB_ROOT_HANDLE" prio "$prio" 2>/dev/null || true
             tc class del dev "$INGRESS_IF" classid "${IFB_ROOT_HANDLE}${port_hex}" 2>/dev/null || true
             info "已移除 ifb0 端口 ${port} 限速"
             removed=1
@@ -312,7 +317,7 @@ load_rules() {
     while IFS='|' read -r port kbps _ _; do
         [[ "$port" =~ ^[0-9]+$ ]] || continue
         [[ "$kbps" =~ ^[0-9]+$ ]] || continue
-        add_limit "$port" "$kbps"
+        add_limit "$port" "$kbps" true
         loaded=1
     done <"${RULES_CONF}"
     return $(( loaded == 0 ))
@@ -553,41 +558,12 @@ menu_install_service() {
 
     case "$choice" in
     1)
-        save_rules
-        cat >"${SERVICE_FILE}" <<SERVICEEOF
-[Unit]
-Description=TC Port Rate Limiter
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=${SCRIPT_PATH} load
-ExecStop=${SCRIPT_PATH} unload-all
-
-[Install]
-WantedBy=multi-user.target
-SERVICEEOF
-        systemctl daemon-reload
-        systemctl enable tc-limit.service 2>/dev/null || warn "systemctl enable 失败"
-        ok "开机自启已安装"
-        info "规则已保存至 ${RULES_CONF}"
-        info "服务文件: ${SERVICE_FILE}"
-        echo
-        echo "  后续可用命令:"
-        echo "    systemctl start tc-limit    立即应用规则"
-        echo "    systemctl stop tc-limit     清除所有规则"
-        echo "    systemctl status tc-limit   查看状态"
+        service_install
         ;;
 
     2)
-        systemctl disable tc-limit.service 2>/dev/null || warn "未找到已启用的服务"
-        systemctl stop tc-limit.service 2>/dev/null || true
-        rm -f "${SERVICE_FILE}"
-        systemctl daemon-reload
-        ok "开机自启已卸载"
-        ;;
+        service_uninstall
+        ;; 
 
     3)
         echo
@@ -614,6 +590,14 @@ cmd_load() {
 }
 
 cmd_unload_all() {
+    check_root
+    check_deps
+    detect_out_if
+    # 检测 ifb0 是否存在
+    if ip link show "$INGRESS_IF" &>/dev/null 2>&1; then
+        HAS_IFB=1
+    fi
+
     local ports=() line minor port
     while IFS= read -r line; do
         if [[ "$line" =~ class\ htb\ ${ETH_ROOT_HANDLE}([0-9a-fA-F]+) ]]; then
@@ -634,6 +618,46 @@ cmd_unload_all() {
     fi
     >"${RULES_CONF}"
     ok "所有限速规则已清除"
+}
+
+# ============================================================================
+# systemd 服务操作 (供菜单和命令行共用)
+# ============================================================================
+service_install() {
+    save_rules
+    cat >"${SERVICE_FILE}" <<SERVICEEOF
+[Unit]
+Description=TC Port Rate Limiter
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${SCRIPT_PATH} load
+ExecStop=${SCRIPT_PATH} unload-all
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+    systemctl daemon-reload
+    systemctl enable tc-limit.service 2>/dev/null || warn "systemctl enable 失败"
+    ok "开机自启已安装"
+    info "规则已保存至 ${RULES_CONF}"
+    info "服务文件: ${SERVICE_FILE}"
+    echo
+    echo "  后续可用命令:"
+    echo "    systemctl start tc-limit    立即应用规则"
+    echo "    systemctl stop tc-limit     清除所有规则"
+    echo "    systemctl status tc-limit   查看状态"
+}
+
+service_uninstall() {
+    systemctl disable tc-limit.service 2>/dev/null || warn "未找到已启用的服务"
+    systemctl stop tc-limit.service 2>/dev/null || true
+    rm -f "${SERVICE_FILE}"
+    systemctl daemon-reload
+    ok "开机自启已卸载"
 }
 
 # ============================================================================
@@ -695,32 +719,10 @@ load) cmd_load ;;
 unload-all) cmd_unload_all ;;
 install)
     init_all
-    save_rules
-    cat >"${SERVICE_FILE}" <<SERVICEEOF
-[Unit]
-Description=TC Port Rate Limiter
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=${SCRIPT_PATH} load
-ExecStop=${SCRIPT_PATH} unload-all
-
-[Install]
-WantedBy=multi-user.target
-SERVICEEOF
-    systemctl daemon-reload
-    systemctl enable tc-limit.service
-    ok "开机自启已安装 (systemctl enable tc-limit)"
+    service_install
     ;;
 uninstall)
-    systemctl disable tc-limit.service 2>/dev/null || true
-    systemctl stop tc-limit.service 2>/dev/null || true
-    rm -f "${SERVICE_FILE}"
-    systemctl daemon-reload
-    ok "开机自启已卸载"
+    service_uninstall
     ;;
 status)
     init_all
