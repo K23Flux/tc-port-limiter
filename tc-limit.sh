@@ -164,17 +164,29 @@ init_all() {
 # ============================================================================
 ensure_root_qdisc() {
     local dev="$1" handle="$2"
-    # 检查是否已有匹配 handle 的 htb qdisc
-    if ! tc qdisc show dev "$dev" 2>/dev/null | grep -q "htb ${handle}"; then
-        # 有旧的不匹配的 qdisc？先清掉
-        if tc qdisc show dev "$dev" 2>/dev/null | grep -q "htb"; then
-            tc qdisc del dev "$dev" root 2>/dev/null || true
-            info "已清除 ${dev} 上旧的 tc qdisc"
-        fi
-        tc qdisc add dev "$dev" root handle "$handle" htb default "${DEFAULT_CLASS}" || die "无法在 ${dev} 上创建 root qdisc"
-        tc class add dev "$dev" parent "${handle}" classid "${handle}${DEFAULT_CLASS}" \
-            htb rate "${DEFAULT_RATE_GBIT}mbit" ceil "${DEFAULT_RATE_GBIT}mbit" || die "无法在 ${dev} 上创建默认 class"
+    # 已有匹配 handle 的 qdisc 则直接返回
+    if tc qdisc show dev "$dev" 2>/dev/null | grep -q "htb ${handle}"; then
+        return 0
     fi
+    # 先尝试 replace（不存在则创建，存在则替换）
+    if tc qdisc replace dev "$dev" root handle "$handle" htb default "${DEFAULT_CLASS}" 2>/dev/null; then
+        tc class replace dev "$dev" parent "${handle}" classid "${handle}${DEFAULT_CLASS}" \
+            htb rate "${DEFAULT_RATE_GBIT}mbit" ceil "${DEFAULT_RATE_GBIT}mbit" 2>/dev/null || {
+            warn "默认 class 创建失败，尝试继续"
+        }
+        return 0
+    fi
+    # replace 失败，尝试先删再建
+    tc qdisc del dev "$dev" root 2>/dev/null || true
+    tc qdisc add dev "$dev" root handle "$handle" htb default "${DEFAULT_CLASS}" 2>/dev/null || {
+        echo -e "${RED}tc 当前状态:${NC}" >&2
+        tc qdisc show dev "$dev" >&2
+        die "无法在 ${dev} 上创建 root qdisc (handle ${handle})"
+    }
+    tc class add dev "$dev" parent "${handle}" classid "${handle}${DEFAULT_CLASS}" \
+        htb rate "${DEFAULT_RATE_GBIT}mbit" ceil "${DEFAULT_RATE_GBIT}mbit" 2>/dev/null || {
+        warn "默认 class 创建失败，尝试继续"
+    }
 }
 
 is_port_limited() {
@@ -198,8 +210,13 @@ add_limit() {
 
     tc class add dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" \
         classid "${ETH_ROOT_HANDLE}${port}" \
-        htb rate "${kbit}kbit" ceil "${kbit}kbit" || \
+        htb rate "${kbit}kbit" ceil "${kbit}kbit" || {
+        echo -e "${RED}--- eth0 当前 qdisc ---${NC}" >&2
+        tc qdisc show dev "$OUT_IF" >&2
+        echo -e "${RED}--- eth0 当前 class ---${NC}" >&2
+        tc class show dev "$OUT_IF" >&2
         die "添加 eth0 class 失败 (port=${port}, rate=${kbit}kbit)"
+    }
 
     tc filter add dev "$OUT_IF" parent "$ETH_ROOT_HANDLE" \
         protocol ip prio 1 flower \
